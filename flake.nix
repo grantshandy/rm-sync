@@ -1,55 +1,58 @@
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs";
-    flake-utils.url = "github:numtide/flake-utils";
-    gomod2nix = {
-      url = "github:nix-community/gomod2nix";
+    utils.url = "github:numtide/flake-utils";
+    crane = {
+      url = "github:ipetkov/crane";
       inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "flake-utils";
+    };
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-utils.follows = "utils";
+      };
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, gomod2nix, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs = { self, nixpkgs, utils, rust-overlay, crane, ... }:
+    utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [ gomod2nix.overlays.default ];
+          overlays = [ (import rust-overlay) ];
         };
 
-        goEnv = pkgs.mkGoEnv { 
-          pwd = ./.;
-          modules = ./gomod2nix.toml;
+        CARGO_BUILD_TARGET = "armv7-unknown-linux-musleabihf";
+
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          targets = [ CARGO_BUILD_TARGET ];
         };
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        rmPkgs = pkgs.pkgsCross.remarkable2.pkgsStatic;
 
-        # pass in custom nixpkgs for cross-compilation/static linking
-        buildPackage = crossPkgsStatic: crossPkgsStatic.buildGoApplication rec {
-          pname = "rm-cloudshim";
-          version = "0.1.0";
-          src = ./.;
-          modules = ./gomod2nix.toml;
+        crate = craneLib.buildPackage {
+          inherit CARGO_BUILD_TARGET;
 
-          nativeBuildInputs = [ crossPkgsStatic.musl ];
+          src = craneLib.cleanCargoSource (craneLib.path ./.);
+          buildInputs = [ rmPkgs.stdenv.cc ];
+          doCheck = false;
 
-          CGO_ENABLED = 1;
-          ldflags = [
-            "-linkmode external"
-            "-extldflags '-static -L${crossPkgsStatic.musl}/lib'"
-            "-s"
-            "-w"
-          ];
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER = "${rmPkgs.stdenv.cc.targetPrefix}cc";
         };
       in
       {
-        packages = {
-          default = buildPackage pkgs.pkgsStatic;
-          remarkable2 = buildPackage pkgs.pkgsCross.remarkable2.pkgsStatic;
-        };
+        packages.default = crate;
 
-        devShells.default = pkgs.mkShell {
+        devShells.default = pkgs.mkShell rec {
+          devToolchain = rustToolchain.override { extensions = [ "rust-analyzer" "rust-src" ]; };
           buildInputs = with pkgs; [
-            rclone gopls go-tools delve runc pkgs.gomod2nix goEnv
+            devToolchain
+            rmPkgs.stdenv.cc
           ];
+
+          RUST_SRC_PATH = "${devToolchain}/lib/rustlib/src/rust/library";
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER = "${rmPkgs.stdenv.cc.targetPrefix}cc";
         };
 
         formatter = pkgs.nixpkgs-fmt;
