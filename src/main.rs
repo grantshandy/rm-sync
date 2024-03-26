@@ -23,11 +23,7 @@ struct Args {
     no_broadcast: bool,
 
     /// the path to the remarkable document directory
-    #[argh(
-        option,
-        short = 'd',
-        default = r#""/home/root/.local/xochitl/".into()"#
-    )]
+    #[argh(option, short = 'd', default = "rm::default_doc_path()")]
     documents: PathBuf,
 }
 
@@ -39,7 +35,8 @@ async fn main() -> color_eyre::Result<()> {
     let args: Args = argh::from_env();
 
     // parse documents
-    let _doc = rm::Documents::from_path(&args.documents).await?;
+    let doc = rm::RmFS::from_path(&args.documents).await?;
+    tracing::info!("{doc:#?}");
 
     http_server(&args).await?;
     Ok(())
@@ -69,7 +66,8 @@ async fn http_server(args: &Args) -> color_eyre::Result<()> {
             .iter()
             .filter(|interface| interface.is_broadcast())
             .flat_map(|interface| &interface.ips)
-            .filter_map(|ip| ip.is_ipv4().then(|| ip.ip()))
+            .filter(|&ip| ip.is_ipv4())
+            .map(|ip| ip.ip())
         {
             tracing::info!(
                 "The server may be available at http://{}:{}/",

@@ -59,7 +59,6 @@
           buildInputs = with pkgs; [
             devToolchain
             cargo-watch
-            just
           ];
         };
 
