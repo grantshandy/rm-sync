@@ -43,6 +43,7 @@
           buildInputs = [ rmPkgs.stdenv.cc ];
           doCheck = false;
 
+          TARGET_CC = "${rmPkgs.stdenv.cc.targetPrefix}cc";
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER = "${rmPkgs.stdenv.cc.targetPrefix}cc";
         };
       in
@@ -51,14 +52,13 @@
 
         devShells.default = pkgs.mkShell rec {
           inherit HTMX;
+          RUST_SRC_PATH = "${devToolchain}/lib/rustlib/src/rust/library";
 
           devToolchain = rustToolchain.override { extensions = [ "rust-analyzer" "rust-src" ]; };
           buildInputs = with pkgs; [
             devToolchain
             cargo-watch
           ];
-
-          RUST_SRC_PATH = "${devToolchain}/lib/rustlib/src/rust/library";
         };
 
         formatter = pkgs.nixpkgs-fmt;
