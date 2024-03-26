@@ -20,6 +20,18 @@
         "type": "github"
       }
     },
+    "htmx": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-F0Dat1y31tUSYgKOHJcUBZ6MURLVXZ59l17NO3VZGkw=",
+        "type": "file",
+        "url": "https://unpkg.com/htmx.org@1.9.11/dist/htmx.min.js"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://unpkg.com/htmx.org@1.9.11/dist/htmx.min.js"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1711307772,
@@ -38,6 +50,7 @@
     "root": {
       "inputs": {
         "crane": "crane",
+        "htmx": "htmx",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay",
         "utils": "utils"

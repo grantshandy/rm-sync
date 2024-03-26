@@ -13,9 +13,13 @@
         flake-utils.follows = "utils";
       };
     };
+    htmx = {
+      url = "https://unpkg.com/htmx.org@1.9.11/dist/htmx.min.js";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, utils, rust-overlay, crane, ... }:
+  outputs = { self, nixpkgs, utils, rust-overlay, crane, htmx, ... }:
     utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -24,6 +28,7 @@
         };
 
         CARGO_BUILD_TARGET = "armv7-unknown-linux-musleabihf";
+        HTMX = "${htmx}";
 
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           targets = [ CARGO_BUILD_TARGET ];
@@ -32,7 +37,7 @@
         rmPkgs = pkgs.pkgsCross.remarkable2.pkgsStatic;
 
         crate = craneLib.buildPackage {
-          inherit CARGO_BUILD_TARGET;
+          inherit CARGO_BUILD_TARGET HTMX;
 
           src = craneLib.cleanCargoSource (craneLib.path ./.);
           buildInputs = [ rmPkgs.stdenv.cc ];
@@ -45,14 +50,15 @@
         packages.default = crate;
 
         devShells.default = pkgs.mkShell rec {
+          inherit HTMX;
+
           devToolchain = rustToolchain.override { extensions = [ "rust-analyzer" "rust-src" ]; };
           buildInputs = with pkgs; [
             devToolchain
-            rmPkgs.stdenv.cc
+            cargo-watch
           ];
 
           RUST_SRC_PATH = "${devToolchain}/lib/rustlib/src/rust/library";
-          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER = "${rmPkgs.stdenv.cc.targetPrefix}cc";
         };
 
         formatter = pkgs.nixpkgs-fmt;
