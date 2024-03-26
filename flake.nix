@@ -36,15 +36,16 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
         rmPkgs = pkgs.pkgsCross.remarkable2.pkgsStatic;
 
-        crate = craneLib.buildPackage {
-          inherit CARGO_BUILD_TARGET HTMX;
+
+        crate = craneLib.buildPackage rec {
+          inherit HTMX CARGO_BUILD_TARGET;
 
           src = craneLib.cleanCargoSource (craneLib.path ./.);
           buildInputs = [ rmPkgs.stdenv.cc ];
           doCheck = false;
 
           TARGET_CC = "${rmPkgs.stdenv.cc.targetPrefix}cc";
-          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER = "${rmPkgs.stdenv.cc.targetPrefix}cc";
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER = TARGET_CC;
         };
       in
       {
@@ -58,6 +59,7 @@
           buildInputs = with pkgs; [
             devToolchain
             cargo-watch
+            just
           ];
         };
 
