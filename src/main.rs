@@ -18,9 +18,9 @@ struct Args {
     #[argh(option, short = 'p', default = "8090")]
     port: u16,
 
-    /// don't broadcast on 0.0.0.0 (helpful for non-root users and development)
+    /// broadcast to the local network (use on ReMarkable)
     #[argh(switch)]
-    no_broadcast: bool,
+    broadcast: bool,
 
     /// the path to the remarkable document directory
     #[argh(option, short = 'd', default = "rm::default_doc_path()")]
@@ -35,8 +35,7 @@ async fn main() -> color_eyre::Result<()> {
     let args: Args = argh::from_env();
 
     // parse documents
-    let doc = rm::RmFS::from_path(&args.documents).await?;
-    tracing::info!("{doc:#?}");
+    let _doc = rm::RmFS::from_path(&args.documents).await?;
 
     http_server(&args).await?;
     Ok(())
@@ -53,15 +52,17 @@ async fn http_server(args: &Args) -> color_eyre::Result<()> {
         );
 
     let socket = SocketAddr::new(
-        match args.no_broadcast {
-            true => Ipv4Addr::LOCALHOST.into(),
-            false => Ipv4Addr::UNSPECIFIED.into(),
+        match args.broadcast {
+            false => Ipv4Addr::LOCALHOST.into(),
+            true => Ipv4Addr::UNSPECIFIED.into(),
         },
         args.port,
     );
 
     tracing::info!("Launching {} at http://{}/", env!("CARGO_PKG_NAME"), socket);
-    if !args.no_broadcast {
+
+    // print a helpful message for broadcasting servers with a line for each ipv4 broadcast interface
+    if args.broadcast {
         for ip in pnet::datalink::interfaces()
             .iter()
             .filter(|interface| interface.is_broadcast())
