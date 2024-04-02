@@ -15,12 +15,13 @@ tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
 tower = "0.4.13"
 tower-http = { version = "0.5.2", features = ["compression-gzip", "trace"] }
 
-axum = "0.7.5"
+axum = { version = "0.7.5", features = ["macros"] }
 webdav = { version = "0.1.0", package = "webdav-meta" }
 maud = { version = "0.26.0", features = ["axum"] }
 
 time = "0.3.34"
 pnet = { version = "0.34.0", default-features = false, features = ["std"] }
+notify = { version = "6.1.1", default-features = false, features = ["macos_kqueue"] }
 
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.115"
@@ -30,3 +31,4 @@ argh = "0.1.12"
 color-eyre = "0.6.3"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
+itertools = "0.12.1"

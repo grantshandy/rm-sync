@@ -1,13 +1,19 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
+    sync::Arc,
 };
 
-use axum::{extract::Path, routing, Router};
+use axum::{
+    extract::{FromRef, State},
+    routing, Router,
+};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::RwLock};
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
+
+use crate::rm::Filesystem;
 
 mod rm;
 
@@ -35,21 +41,37 @@ async fn main() -> color_eyre::Result<()> {
     let args: Args = argh::from_env();
 
     // parse documents
-    let _doc = rm::RmFS::from_path(&args.documents).await?;
+    let fs = Arc::new(RwLock::new(Filesystem::from_path(&args.documents).await?));
 
-    http_server(&args).await?;
+    let fs_clone = fs.clone();
+    tokio::spawn(async move {
+        rm::watch_fs(fs_clone).await;
+    });
+
+    http_server(
+        &args,
+        AppState {
+            fs,
+        },
+    )
+    .await?;
     Ok(())
 }
 
-async fn http_server(args: &Args) -> color_eyre::Result<()> {
+#[derive(Clone, FromRef)]
+struct AppState {
+    fs: Arc<RwLock<Filesystem>>,
+}
+
+async fn http_server(args: &Args, state: AppState) -> color_eyre::Result<()> {
     let app = Router::new()
         .route("/", routing::get(root))
-        .route("/button/:count", routing::get(button))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
                 .layer(CompressionLayer::new().gzip(true)),
-        );
+        )
+        .with_state(state);
 
     let socket = SocketAddr::new(
         match args.broadcast {
@@ -82,24 +104,16 @@ async fn http_server(args: &Args) -> color_eyre::Result<()> {
     Ok(())
 }
 
-async fn root() -> Markup {
+async fn root(State(fs): State<Arc<RwLock<Filesystem>>>) -> Markup {
+    let fs = fs.read().await;
+
     page(
         "rm-cloudsync",
         html! {
             h1 { ("rm-cloudsync") }
-            (button(Path(0)).await)
+            pre { (PreEscaped(format!("{fs:#?}"))) }
         },
     )
-}
-
-async fn button(Path(count): Path<i32>) -> Markup {
-    html! {
-        p id="button" hx-swap="outerHTML" hx-target="#button" {
-            button hx-get={("/button/")(count - 1)} {("-")}
-            (' ')(count)(' ')
-            button hx-get={("/button/")(count + 1)} {("+")}
-        }
-    }
 }
 
 fn page(title: impl AsRef<str>, body: Markup) -> Markup {
