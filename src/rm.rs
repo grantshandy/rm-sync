@@ -1,14 +1,10 @@
-use itertools::Itertools;
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
-    collections::HashMap,
-    ffi::OsStr,
-    fs, io,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     str::FromStr,
-    sync::Arc,
 };
-use tokio::sync::{mpsc, RwLock};
+
+use dashmap::DashMap;
+use itertools::Itertools;
 use uuid::Uuid;
 
 /// Try to guess a good default document path based on the OS
@@ -21,312 +17,283 @@ pub fn default_doc_path() -> PathBuf {
     "./samples/v6/".into()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Filesystem {
     path: PathBuf,
-    root: Directory,
+    elements: DashMap<Uuid, Element>,
 }
 
 impl Filesystem {
-    pub async fn from_path(path: impl Into<PathBuf>) -> io::Result<Self> {
+    pub fn from_path(path: impl Into<PathBuf>) -> Self {
+        let mut me = Self {
+            path: path.into(),
+            ..Default::default()
+        };
+
+        me.reindex();
+
+        me
+    }
+
+    pub fn list(&self, path: impl Into<PathBuf>) -> Vec<Element> {
         let path = path.into();
-        let root = Directory::from_dir(&path).await?;
 
-        Ok(Filesystem { path, root })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Document {
-    name: String,
-    uuid: Uuid,
-    pinned: bool,
-}
-
-#[derive(Default, Clone, Debug, PartialEq, Eq)]
-pub struct Directory {
-    name: String,
-    documents: Vec<Document>,
-    directories: Vec<Directory>,
-}
-
-impl Directory {
-    /// Construct a root [`Directory`] from a given path.
-    pub async fn from_dir(path: &PathBuf) -> io::Result<Self> {
-        tracing::debug!("indexing document directory {path:?}");
-
-        // build metadata entries
-        let mut parsed_documents: HashMap<Uuid, (Document, Parent)> = HashMap::new();
-        let mut parsed_directories: HashMap<Uuid, (String, Parent)> = HashMap::new();
-
-        // TODO: Parallelize?
-        for entry in path.read_dir()? {
-            let path = match entry {
-                Ok(entry) => entry.path(),
-                Err(err) => {
-                    tracing::warn!("couldn't read file entry: {err}");
-                    continue;
-                }
-            };
-
-            // only analyze metadata files
-            if path.extension() != Some(OsStr::new("metadata")) {
-                continue;
-            }
-
-            // parse filename into typed Uuid
-            let uuid = match path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(Uuid::parse_str)
-            {
-                Some(Ok(uuid)) => uuid,
-                Some(Err(err)) => {
-                    tracing::error!("error parsing {path:?} path UUID: {err:?}");
-                    continue;
-                }
-                None => {
-                    tracing::error!("no file stem found for {path:?}");
-                    continue;
-                }
-            };
-
-            let path = path.parent().unwrap();
-
-            match read_metadata(&path, uuid) {
-                Some(DiskEntry::Directory { name, parent, uuid }) => {
-                    parsed_directories.insert(uuid, (name, parent));
-                }
-                Some(DiskEntry::Document { doc, parent }) => {
-                    parsed_documents.insert(doc.uuid, (doc, parent));
-                }
-                None => (),
-            };
+        // can't list children of files
+        if path.is_file() {
+            tracing::warn!("list called on a file");
+            return Vec::new();
         }
 
-        // populate filesystem
-        let mut root = Directory::default();
-
-        // resolve document paths
-        for (_, (doc, parent)) in parsed_documents {
-            root.insert(&write_path(&parsed_directories, parent), doc);
+        // if path is root, simply return all files pointing to the root
+        if path.parent().is_none() {
+            return self
+                .elements
+                .iter()
+                .filter(|e| e.value().parent == Parent::Root)
+                .map(|v| v.value().clone())
+                .collect();
         }
 
-        Ok(root)
-    }
-
-    pub fn insert(&mut self, path: &[&str], target: Document) {
-        match path.is_empty() {
-            true => {
-                if !self.documents.contains(&target) {
-                    self.documents.push(target);
-                }
-            }
-            false => {
-                if !self.directories.iter().any(|d| d.name == path[0]) {
-                    self.directories.push(Directory {
-                        name: path[0].to_string(),
-                        ..Default::default()
-                    });
-                }
-
-                let dir = self
-                    .directories
-                    .iter_mut()
-                    .find(|d| d.name == path[0])
-                    .expect("get inserted child path");
-
-                dir.insert(&path[1..], target);
-            }
-        }
-    }
-
-    pub fn get_mut(&mut self, uuid: &Uuid) -> Option<&mut Document> {
-        for doc in &mut self.documents {
-            if &doc.uuid == uuid {
-                return Some(doc);
-            }
+        // if path is trash, return all files in the trash
+        if path == Path::new("/Trash") {
+            return self
+                .elements
+                .iter()
+                .filter(|e| e.parent == Parent::Trash)
+                .map(|v| v.value().clone())
+                .collect();
         }
 
-        for dir in &mut self.directories {
-            if let Some(doc) = dir.get_mut(uuid) {
-                return Some(doc);
-            }
+        // if path is custom pinned path, return that
+        if path == Path::new("/Pinned") {
+            return self
+                .elements
+                .iter()
+                .filter(|e| e.pinned)
+                .map(|e| e.value().clone())
+                .collect();
         }
 
-        None
-    }
+        let Some((uuid, _)) = self.uuid_from_path(&path) else {
+            tracing::error!("no uuid found for directory {path:?}");
+            return Vec::new();
+        };
 
-    pub fn pinned(&self) -> Vec<Document> {
-        let mut current: Vec<Document> = self.documents.iter().filter(|d| d.pinned).cloned().collect();
-        let mut res = self
-            .directories
+        return self
+            .elements
             .iter()
-            .flat_map(|dir| dir.pinned())
-            .collect::<Vec<_>>();
-        res.append(&mut current);
-
-        return res;
+            .filter(|e| e.value().parent == Parent::Directory(uuid))
+            .map(|e| e.value().clone())
+            .collect();
     }
-}
 
-/// Continuously update a [`Directory`] when updated.
-pub async fn watch_fs(fs: Arc<RwLock<Filesystem>>) {
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    fn uuid_from_path(&self, path: &PathBuf) -> Option<(Uuid, Element)> {
+        let mut components = path.components();
 
-    let mut watcher = RecommendedWatcher::new(
-        move |res: Result<Event, notify::Error>| match res {
-            Ok(event) => match event.kind {
-                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                    if let Err(err) = tx.send(event) {
-                        tracing::error!("error sending watch event: {err}");
-                    }
-                }
-                _ => (),
-            },
-            _ => (),
-        },
-        Config::default(),
-    )
-    .expect("construct watcher");
+        let name = match components.next_back()? {
+            Component::Normal(os) => os.to_string_lossy(),
+            _ => return None,
+        };
 
-    watcher
-        .watch(&fs.read().await.path, RecursiveMode::Recursive)
-        .expect("watch files");
-
-    while let Some(e) = rx.recv().await {
-        let uuids: Vec<Uuid> = e
-            .paths
+        let mut candidates: Vec<(Uuid, Element)> = self
+            .elements
             .iter()
-            .filter_map(|p| p.file_stem())
-            .filter_map(|os| os.to_str())
-            .filter_map(|s| Uuid::from_str(s).ok())
+            .filter(|e| e.name == name)
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect();
+
+        // if there are no elements with the same name, it must not exist
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // if the name is unique, return that
+        if candidates.len() == 1 {
+            return candidates.pop();
+        }
+
+        unimplemented!("duplicate element names")
+    }
+
+    fn reindex(&mut self) {
+        tracing::info!("indexing {:?}", self.path);
+
+        let dir = match self.path.read_dir() {
+            Ok(dir) => dir,
+            Err(err) => {
+                tracing::error!("failed to read dir {:?}: {}", self.path, err);
+                return;
+            }
+        };
+
+        let uuids: Vec<Uuid> = dir
+            .filter_map(Result::ok)
+            .filter_map(|s| {
+                Uuid::from_str(&s.path().file_stem().unwrap_or_default().to_string_lossy()).ok()
+            })
             .dedup()
             .collect();
 
-        if uuids.is_empty() {
-            continue;
-        }
+        self.elements.clear();
 
-        let uuid = uuids[0];
-
-        match e.kind {
-            EventKind::Create(_) => tracing::debug!("created {uuids:?}"),
-            EventKind::Modify(_) => {
-                // update filesystem metadata from disk
-                if let Some(DiskEntry::Document { doc, .. }) =
-                    read_metadata(&fs.read().await.path, uuid)
-                {
-                    tracing::info!("got metadata");
-                    let mut fs = fs.write().await;
-                    tracing::info!("got write lock");
-                    *fs.root.get_mut(&uuid).expect("get modified uuid") = doc;
-                    drop(fs);
-                };
+        // TODO: parallelize?
+        for uuid in uuids {
+            if let Some(element) = disk::read(&self.path, uuid) {
+                self.elements.insert(uuid, element);
             }
-            EventKind::Remove(_) => tracing::debug!("removed {uuids:?}"),
-            _ => (),
         }
-
-        tracing::info!("finished updating");
     }
 }
 
-/// Recursively generate the path for a document from its parent.
-fn write_path(dirs: &HashMap<Uuid, (String, Parent)>, current: Parent) -> Vec<&str> {
-    match current {
-        Parent::Root => vec![],
-        Parent::Trash => vec!["Trash"],
-        Parent::Directory(d) => match dirs.get(&d) {
-            Some((name, parent)) => {
-                let mut back = write_path(dirs, *parent);
-                back.push(name);
-                back
-            }
-            None => {
-                tracing::warn!("couldn't find parent directory {d} for {current:?}");
-                vec![]
-            }
-        },
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Document {
+    format: Format,
 }
 
-fn read_metadata(path: &Path, uuid: Uuid) -> Option<DiskEntry> {
-    let path = path.join(format!("{uuid}.metadata"));
-    tracing::debug!("updating {path:?}");
-
-    let bytes = match fs::read(&path) {
-        Ok(b) => b,
-        Err(err) => {
-            tracing::error!("error reading .metadata: {err}");
-            return None;
-        }
-    };
-
-    let metadata: Metadata = match serde_json::from_slice(&bytes) {
-        Ok(metadata) => metadata,
-        Err(err) => {
-            tracing::error!("error parsing json for {path:?}: {err:?}");
-            return None;
-        }
-    };
-
-    match metadata.element_type {
-        Type::Document => Some(DiskEntry::Document {
-            doc: Document {
-                name: metadata.title,
-                uuid,
-                pinned: metadata.pinned,
-            },
-            parent: metadata.parent,
-        }),
-        Type::Collection => Some(DiskEntry::Directory {
-            name: metadata.title,
-            parent: metadata.parent,
-            uuid,
-        }),
-    }
-}
-
-enum DiskEntry {
-    Directory {
-        name: String,
-        parent: Parent,
-        uuid: Uuid,
-    },
-    Document {
-        doc: Document,
-        parent: Parent,
-    },
-}
-
-/// Representation of <UUID>.metadata
-#[derive(serde::Deserialize, Debug)]
-pub struct Metadata {
-    #[serde(rename = "type")]
-    element_type: Type,
-    #[serde(rename = "visibleName")]
-    title: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Element {
+    name: String,
     parent: Parent,
     pinned: bool,
+    content: ElementKind,
 }
 
-#[derive(serde::Deserialize, PartialEq, Debug)]
-pub enum Type {
-    /// A document
-    #[serde(rename = "DocumentType")]
-    Document,
-    /// A folder
-    #[serde(rename = "CollectionType")]
-    Collection,
+impl Element {
+    pub fn is_doc(&self) -> bool {
+        match self.content {
+            ElementKind::Document(_) => true,
+            ElementKind::Directory => false,
+        }
+    }
+
+    pub fn is_dir(&self) -> bool {
+        match self.content {
+            ElementKind::Document(_) => false,
+            ElementKind::Directory => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ElementKind {
+    Document(Document),
+    Directory,
 }
 
 #[derive(serde::Deserialize, Eq, PartialEq, Debug, Copy, Clone)]
-pub enum Parent {
+enum Format {
+    #[serde(rename = "notebook")]
+    Notebook,
+    #[serde(rename = "pdf")]
+    Pdf,
+    #[serde(rename = "epub")]
+    Epub,
+}
+
+#[derive(serde::Deserialize, Eq, PartialEq, Debug, Copy, Clone)]
+enum Parent {
     #[serde(rename = "")]
     Root,
     #[serde(rename = "trash")]
     Trash,
     #[serde(untagged)]
     Directory(Uuid),
+}
+
+mod disk {
+    use std::{fs, path::PathBuf};
+
+    use uuid::Uuid;
+
+    use super::{Document, Element, ElementKind, Format, Parent};
+
+    pub fn read(path: &PathBuf, uuid: Uuid) -> Option<Element> {
+        let metadata_path = path.join(format!("{uuid}.metadata"));
+
+        if !metadata_path.exists() {
+            return None;
+        }
+
+        // read metadata
+        let meta: Metadata =
+            match fs::read(metadata_path).map(|b| serde_json::from_slice::<Metadata>(&b)) {
+                Ok(Ok(meta)) => meta,
+                Ok(Err(err)) => {
+                    tracing::error!("failed to parse {uuid}.metadata json: {err}");
+                    return None;
+                }
+                Err(err) => {
+                    tracing::error!("failed to read {uuid}.metadata: {err}");
+                    return None;
+                }
+            };
+
+        match meta.kind {
+            ElementType::Document => {
+                let content_path = path.join(format!("{uuid}.content"));
+
+                if !content_path.exists() {
+                    tracing::error!(
+                        "content file {content_path:?} doesn't exist, skipping document"
+                    );
+                    return None;
+                }
+
+                // read .content file
+                let content: Content =
+                    match fs::read(content_path).map(|b| serde_json::from_slice::<Content>(&b)) {
+                        Ok(Ok(content)) => content,
+                        Ok(Err(err)) => {
+                            tracing::error!("failed to parse {uuid}.content json: {err}");
+                            return None;
+                        }
+                        Err(err) => {
+                            tracing::error!("failed to read {uuid}.content: {err}");
+                            return None;
+                        }
+                    };
+
+                Some(Element {
+                    name: meta.name,
+                    parent: meta.parent,
+                    pinned: meta.pinned,
+                    content: ElementKind::Document(Document {
+                        format: content.format,
+                    }),
+                })
+            }
+            ElementType::Directory => Some(Element {
+                name: meta.name,
+                parent: meta.parent,
+                pinned: meta.pinned,
+                content: ElementKind::Directory,
+            }),
+        }
+    }
+
+    /// Representation of <UUID>.metadata
+    #[derive(serde::Deserialize, Debug)]
+    struct Metadata {
+        #[serde(rename = "type")]
+        kind: ElementType,
+        #[serde(rename = "visibleName")]
+        name: String,
+        parent: Parent,
+        pinned: bool,
+    }
+
+    #[derive(serde::Deserialize, PartialEq, Debug)]
+    enum ElementType {
+        #[serde(rename = "DocumentType")]
+        Document,
+        #[serde(rename = "CollectionType")]
+        Directory,
+    }
+
+    /// Representation of <UUID>.content
+    #[derive(serde::Deserialize, Eq, PartialEq, Debug, Copy, Clone)]
+    struct Content {
+        #[serde(rename = "fileType")]
+        format: Format,
+    }
 }

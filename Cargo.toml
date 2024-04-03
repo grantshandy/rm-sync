@@ -27,8 +27,10 @@ serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.115"
 uuid = { version = "1.8.0", features = ["serde"] }
 
+itertools = "0.12.1"
+dashmap = { version = "5.5.3", features = ["inline"] }
+
 argh = "0.1.12"
 color-eyre = "0.6.3"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-itertools = "0.12.1"

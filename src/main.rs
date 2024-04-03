@@ -1,7 +1,6 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
-    sync::Arc,
 };
 
 use axum::{
@@ -9,13 +8,14 @@ use axum::{
     routing, Router,
 };
 use maud::{html, Markup, PreEscaped, DOCTYPE};
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 
 use crate::rm::Filesystem;
 
 mod rm;
+mod webdav;
 
 /// A web interface/webdav proxy for ReMarkable
 #[derive(argh::FromArgs, Clone)]
@@ -41,12 +41,8 @@ async fn main() -> color_eyre::Result<()> {
     let args: Args = argh::from_env();
 
     // parse documents
-    let fs = Arc::new(RwLock::new(Filesystem::from_path(&args.documents).await?));
-
-    let fs_clone = fs.clone();
-    tokio::spawn(async move {
-        rm::watch_fs(fs_clone).await;
-    });
+    let fs = Filesystem::from_path(&args.documents);
+    tracing::debug!("{:#?}", fs.list("/Books"));
 
     http_server(
         &args,
@@ -60,7 +56,7 @@ async fn main() -> color_eyre::Result<()> {
 
 #[derive(Clone, FromRef)]
 struct AppState {
-    fs: Arc<RwLock<Filesystem>>,
+    fs: Filesystem,
 }
 
 async fn http_server(args: &Args, state: AppState) -> color_eyre::Result<()> {
@@ -104,9 +100,7 @@ async fn http_server(args: &Args, state: AppState) -> color_eyre::Result<()> {
     Ok(())
 }
 
-async fn root(State(fs): State<Arc<RwLock<Filesystem>>>) -> Markup {
-    let fs = fs.read().await;
-
+async fn root(State(fs): State<Filesystem>) -> Markup {
     page(
         "rm-cloudsync",
         html! {
