@@ -14,7 +14,7 @@ An open-source [WebDAV](https://en.wikipedia.org/wiki/WebDAV) server for the [re
                                                                          v
                                                              ***************************
                                                              *                         *
-                                                             *  web app file explorer  *
+                                                             *  file explorer web app  *
                                                              *                         *
                                                              ***************************
 ```
@@ -56,12 +56,12 @@ It also powers an HTTP file explorer/configuration panel for conveniently access
        - [ ] `/Trash`
        - [ ] `/Pinned`
        - [ ] `/Templates`
-       - [ ]  - [ ] Web interface
-   - [ ] File explorer
-   - [ ] Configuration menu
-     - [ ] RClone remote configuration (?)
-     - [ ] `rclone bisync <webDAV> <cloud service>` scheduled sync for the whole filesystem.
-     - [ ] `rclone sync <webDav>/file.pdf <cloud service>/file.pdf` hook for individual file updates.
+   - [ ] Web interface
+     - [ ] File explorer
+     - [ ] Configuration menu
+       - [ ] RClone remote configuration (?)
+       - [ ] `rclone bisync <webDAV> <cloud service>` scheduled sync for the whole filesystem.
+       - [ ] `rclone sync <webDav>/file.pdf <cloud service>/file.pdf` hook for individual file updates.
    - [ ] Password Authentication/Session Management
  - [X] RClone for the reMarkable
    - [X] Cross-compile RCLone (`nix build nixpkgs#pkgsCross.remarkable2.pkgsStatic.rclone`)
@@ -69,5 +69,6 @@ It also powers an HTTP file explorer/configuration panel for conveniently access
  - [ ] Create installation script & systemd service
 
 ## Previous Work
+ - [reMarkable .lines File Format](https://plasma.ninja/blog/devices/remarkable/binary/format/2017/12/26/reMarkable-lines-file-format.html) (Axel Huebl)
  - [rmrl](https://github.com/rschroll/rmrl) a python renderer for the .lines format.
  - [lines-are-beautiful](https://github.com/ax3l/lines-are-beautiful) another renderer for the .lines format, in C++.
