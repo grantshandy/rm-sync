@@ -62,6 +62,7 @@ It also powers an HTTP file explorer/configuration panel for conveniently access
      - [ ] RClone remote configuration (?)
      - [ ] `rclone bisync <webDAV> <cloud service>` scheduled sync for the whole filesystem.
      - [ ] `rclone sync <webDav>/file.pdf <cloud service>/file.pdf` hook for individual file updates.
+   - [ ] Password Authentication/Session Management
  - [X] RClone for the reMarkable
    - [X] Cross-compile RCLone (`nix build nixpkgs#pkgsCross.remarkable2.pkgsStatic.rclone`)
    - [ ] Build `librclone` and statically link (?)
