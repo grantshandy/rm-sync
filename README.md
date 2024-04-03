@@ -29,7 +29,7 @@ It also powers an HTTP file explorer/configuration panel for conveniently access
  - No data-loss.
  - Be performant by utilizing caching/parallelization and reducing memory allocations/network calls/file reads as much as possible as to not impact user experience and battery life.
  - Simple user experience (shell script to install over USB)
- - Simple installation (two statically-linked executables and a systemd service)
+ - Simple installation (one statically-linked executable and a systemd service)
 
 ## Progress
  - [X] Cross-compile a statically-linked Rust executable with nix.
@@ -39,20 +39,32 @@ It also powers an HTTP file explorer/configuration panel for conveniently access
    - [ ] Fetch PDF/EPUB documents
    - [ ] Fetch thumbnails
    - [ ] Automatically update representation when files are changed.
- - [ ] Methods for modifying files
-   - [ ] Renaming notes/directories
-   - [ ] Deleting documents/directories
-   - [ ] Creating directories/documents
- - [ ] Implement WebDAV layer
-   - [ ] `GET`
-   - [ ] `PUT`
-   - [ ] `MKCOL`
-   - [ ] `DELETE`
-   - [ ] `MOVE`
-   - [ ] `LOCK`/`UNLOCK` (?)
- - [ ] Create HTTP interface
+   - [ ] Methods for modifying files
+     - [ ] Renaming notes/directories
+     - [ ] Deleting documents/directories
+     - [ ] Creating directories/documents
+ - [ ] HTTP Server
+   - [ ] WebDAV layer
+     - [ ] Methods
+       - [ ] `GET`
+       - [ ] `PUT`
+       - [ ] `MKCOL`
+       - [ ] `DELETE`
+       - [ ] `MOVE`
+       - [ ] `LOCK`/`UNLOCK` (?)
+     - [ ] Custom Directories
+       - [ ] `/Trash`
+       - [ ] `/Pinned`
+       - [ ] `/Templates`
+       - [ ]  - [ ] Web interface
    - [ ] File explorer
    - [ ] Configuration menu
+     - [ ] RClone remote configuration (?)
+     - [ ] `rclone bisync <webDAV> <cloud service>` scheduled sync for the whole filesystem.
+     - [ ] `rclone sync <webDav>/file.pdf <cloud service>/file.pdf` hook for individual file updates.
+ - [X] RClone for the reMarkable
+   - [X] Cross-compile RCLone (`nix build nixpkgs#pkgsCross.remarkable2.pkgsStatic.rclone`)
+   - [ ] Build `librclone` and statically link (?)
  - [ ] Create installation script & systemd service
 
 ## Previous Work
