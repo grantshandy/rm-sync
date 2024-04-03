@@ -62,6 +62,9 @@ struct AppState {
 async fn http_server(args: &Args, state: AppState) -> color_eyre::Result<()> {
     let app = Router::new()
         .route("/", routing::get(root))
+        .route("/dav", routing::any(webdav::dav))
+        .route("/dav/", routing::any(webdav::dav))
+        .route("/dav/*path", routing::any(webdav::dav))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
