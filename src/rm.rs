@@ -112,7 +112,32 @@ impl Filesystem {
             return candidates.pop();
         }
 
-        unimplemented!("duplicate element names")
+        candidates
+            .iter()
+            .find(|(_, elem)| self.path_matches(&path, &elem))
+            .cloned()
+    }
+
+    /// A method for verifying that an element exists at a given path
+    fn path_matches(&self, path: &Path, elem: &Element) -> bool {
+        match (path.parent(), elem.parent) {
+            // elem parent's UUID exists in self.elements & is a directory that ends with the current path, AND is itself valid
+            (Some(parent), Parent::Directory(uuid)) => self
+                .elements
+                .get(&uuid)
+                .map(|v| v.value().clone())
+                .filter(|v| v.is_dir() && parent.ends_with(&v.name))
+                .is_some_and(|v| self.path_matches(parent, &v)),
+
+            // Parent::Trash <=> "/Trash"
+            (Some(t), Parent::Trash) if t == Path::new("/Trash") => true,
+
+            // Parent::Root <=> "/" (no parent)
+            (None, Parent::Root) => true,
+
+            // if all else, false
+            _ => true,
+        }
     }
 
     fn reindex(&self) {
