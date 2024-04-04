@@ -60,6 +60,7 @@
           buildInputs = with pkgs; [
             devToolchain
             cargo-watch
+            cargo-expand
             dave
           ];
         };

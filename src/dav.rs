@@ -44,7 +44,7 @@ pub async fn dav(
 }
 
 async fn dav_get(req: Request, path: path::PathBuf, fs: Filesystem) -> Response {
-    ().into_response()
+    format!("{:#?}", fs.list(path)).into_response()
 }
 
 async fn dav_put(req: Request, path: path::PathBuf, fs: Filesystem) -> Response {

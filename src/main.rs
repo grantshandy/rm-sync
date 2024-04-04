@@ -3,11 +3,7 @@ use std::{
     path::PathBuf,
 };
 
-use axum::{
-    extract::{FromRef, State},
-    routing, Router,
-};
-use maud::{html, Markup, PreEscaped, DOCTYPE};
+use axum::{extract::FromRef, routing, Router};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
@@ -16,6 +12,7 @@ use crate::rm::Filesystem;
 
 mod dav;
 mod rm;
+mod web;
 
 /// A web interface/webdav proxy for ReMarkable
 #[derive(argh::FromArgs, Clone)]
@@ -54,10 +51,11 @@ struct AppState {
 
 async fn http_server(args: &Args, state: AppState) -> color_eyre::Result<()> {
     let app = Router::new()
-        .route("/", routing::get(root))
+        .route("/", routing::get(web::root))
         .route("/dav", routing::any(dav::dav))
         .route("/dav/", routing::any(dav::dav))
         .route("/dav/*path", routing::any(dav::dav))
+        .fallback(web::fallback)
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
@@ -94,29 +92,4 @@ async fn http_server(args: &Args, state: AppState) -> color_eyre::Result<()> {
 
     axum::serve(TcpListener::bind(&socket).await?, app).await?;
     Ok(())
-}
-
-async fn root(State(fs): State<Filesystem>) -> Markup {
-    page(
-        "rm-cloudsync",
-        html! {
-            h1 { ("rm-cloudsync") }
-            pre { (PreEscaped(format!("{fs:#?}"))) }
-        },
-    )
-}
-
-fn page(title: impl AsRef<str>, body: Markup) -> Markup {
-    html! {
-        (DOCTYPE)
-        html lang="en" {
-            head {
-                meta charset="UTF-8";
-                meta name="viewport" content="width=device-width, initial-scale=1.0";
-                script { (PreEscaped(include_str!(env!("HTMX")))) }
-                title { (title.as_ref()) }
-            }
-            body { (body) }
-        }
-    }
 }

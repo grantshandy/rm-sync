@@ -55,7 +55,7 @@ impl Filesystem {
         }
 
         // if path is trash, return all files in the trash
-        if path == Path::new("/Trash") {
+        if path == Path::new("Trash") {
             return self
                 .elements
                 .iter()
@@ -65,7 +65,7 @@ impl Filesystem {
         }
 
         // if path is custom pinned path, return that
-        if path == Path::new("/Pinned") {
+        if path == Path::new("Pinned") {
             return self
                 .elements
                 .iter()
