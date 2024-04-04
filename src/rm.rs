@@ -25,7 +25,7 @@ pub struct Filesystem {
 
 impl Filesystem {
     pub fn from_path(path: impl Into<PathBuf>) -> Self {
-        let mut me = Self {
+        let me = Self {
             path: path.into(),
             ..Default::default()
         };
@@ -115,7 +115,7 @@ impl Filesystem {
         unimplemented!("duplicate element names")
     }
 
-    fn reindex(&mut self) {
+    fn reindex(&self) {
         tracing::info!("indexing {:?}", self.path);
 
         let dir = match self.path.read_dir() {

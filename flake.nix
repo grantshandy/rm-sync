@@ -54,12 +54,13 @@
         devShells.default = pkgs.mkShell rec {
           inherit HTMX;
           RUST_SRC_PATH = "${devToolchain}/lib/rustlib/src/rust/library";
-          RUST_LOG="debug";
+          RUST_LOG = "debug";
 
           devToolchain = rustToolchain.override { extensions = [ "rust-analyzer" "rust-src" ]; };
           buildInputs = with pkgs; [
             devToolchain
             cargo-watch
+            dave
           ];
         };
 

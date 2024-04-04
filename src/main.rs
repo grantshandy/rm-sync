@@ -14,8 +14,8 @@ use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 
 use crate::rm::Filesystem;
 
+mod dav;
 mod rm;
-mod webdav;
 
 /// A web interface/webdav proxy for ReMarkable
 #[derive(argh::FromArgs, Clone)]
@@ -42,15 +42,8 @@ async fn main() -> color_eyre::Result<()> {
 
     // parse documents
     let fs = Filesystem::from_path(&args.documents);
-    tracing::debug!("{:#?}", fs.list("/Books"));
 
-    http_server(
-        &args,
-        AppState {
-            fs,
-        },
-    )
-    .await?;
+    http_server(&args, AppState { fs }).await?;
     Ok(())
 }
 
@@ -62,9 +55,9 @@ struct AppState {
 async fn http_server(args: &Args, state: AppState) -> color_eyre::Result<()> {
     let app = Router::new()
         .route("/", routing::get(root))
-        .route("/dav", routing::any(webdav::dav))
-        .route("/dav/", routing::any(webdav::dav))
-        .route("/dav/*path", routing::any(webdav::dav))
+        .route("/dav", routing::any(dav::dav))
+        .route("/dav/", routing::any(dav::dav))
+        .route("/dav/*path", routing::any(dav::dav))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
