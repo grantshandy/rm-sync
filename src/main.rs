@@ -1,9 +1,10 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
+    sync::Arc,
 };
 
-use axum::{extract::FromRef, routing, Router};
+use axum::{routing, Router};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
@@ -14,19 +15,19 @@ mod dav;
 mod rm;
 mod web;
 
-/// A web interface/webdav proxy for ReMarkable
+/// A web interface/webdav proxy for the reMarkable tablet
 #[derive(argh::FromArgs, Clone)]
 struct Args {
-    /// which port to launch the HTTP server on
+    /// the desired port to run the HTTP server on
     #[argh(option, short = 'p', default = "8090")]
     port: u16,
 
-    /// broadcast to the local network (use on ReMarkable)
-    #[argh(switch)]
-    broadcast: bool,
+    /// don't broadcast HTTP on 0.0.0.0:<PORT>
+    #[argh(switch, short = 'b')]
+    no_broadcast: bool,
 
-    /// the path to the remarkable document directory
-    #[argh(option, short = 'd', default = "rm::default_doc_path()")]
+    /// the path to the reMarkable document directory
+    #[argh(option, short = 'd', default = "default_doc_path()")]
     documents: PathBuf,
 }
 
@@ -38,18 +39,14 @@ async fn main() -> color_eyre::Result<()> {
     let args: Args = argh::from_env();
 
     // parse documents
-    let fs = Filesystem::from_path(&args.documents);
+    let fs = Arc::new(Filesystem::from_path(&args.documents).await);
 
-    http_server(&args, AppState { fs }).await?;
-    Ok(())
+    let (a, _) = tokio::join![http_server(&args, fs.clone()), fs.auto_reindex()];
+
+    a
 }
 
-#[derive(Clone, FromRef)]
-struct AppState {
-    fs: Filesystem,
-}
-
-async fn http_server(args: &Args, state: AppState) -> color_eyre::Result<()> {
+async fn http_server(args: &Args, state: Arc<Filesystem>) -> color_eyre::Result<()> {
     let app = Router::new()
         .route("/", routing::get(web::root))
         .route("/dav", routing::any(dav::dav))
@@ -64,7 +61,7 @@ async fn http_server(args: &Args, state: AppState) -> color_eyre::Result<()> {
         .with_state(state);
 
     let socket = SocketAddr::new(
-        match args.broadcast {
+        match args.no_broadcast {
             false => Ipv4Addr::LOCALHOST.into(),
             true => Ipv4Addr::UNSPECIFIED.into(),
         },
@@ -74,7 +71,7 @@ async fn http_server(args: &Args, state: AppState) -> color_eyre::Result<()> {
     tracing::info!("Launching {} at http://{}/", env!("CARGO_PKG_NAME"), socket);
 
     // print a helpful message for broadcasting servers with a line for each ipv4 broadcast interface
-    if args.broadcast {
+    if args.no_broadcast {
         for ip in pnet::datalink::interfaces()
             .iter()
             .filter(|interface| interface.is_broadcast())
@@ -92,4 +89,22 @@ async fn http_server(args: &Args, state: AppState) -> color_eyre::Result<()> {
 
     axum::serve(TcpListener::bind(&socket).await?, app).await?;
     Ok(())
+}
+
+pub fn is_remarkable() -> bool {
+    return cfg!(all(
+        target_arch = "arm",
+        target_env = "musl",
+        target_os = "linux"
+    ));
+}
+
+/// Try to guess a good default document path based on the OS
+pub fn default_doc_path() -> PathBuf {
+    if is_remarkable() {
+        tracing::debug!("Assuming we're running on the reMarkable tablet");
+        "/home/root/.local/share/remarkable/xochitl/".into()
+    } else {
+        "./samples/v6/".into()
+    }
 }

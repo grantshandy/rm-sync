@@ -1,5 +1,5 @@
 [package]
-name = "rm-cloudshim"
+name = "rm-webdav"
 version = "0.1.0"
 edition = "2021"
 
@@ -11,7 +11,8 @@ codegen-units = 1
 panic = "abort"
 
 [dependencies]
-tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.36.0", features = ["rt-multi-thread", "macros", "fs"] }
+futures = "0.3.30"
 tower = "0.4.13"
 tower-http = { version = "0.5.2", features = ["compression-gzip", "trace"] }
 

@@ -1,36 +1,43 @@
 use std::{
     path::{Component, Path, PathBuf},
-    str::FromStr,
+    sync::Arc,
+    time::Duration,
 };
 
-use dashmap::DashMap;
-use itertools::Itertools;
+use dashmap::{DashMap, DashSet};
+use futures::{stream, StreamExt};
+use notify::{Event, RecursiveMode, Watcher};
 use uuid::Uuid;
 
-/// Try to guess a good default document path based on the OS
-pub fn default_doc_path() -> PathBuf {
-    // try to detect armv7/linux/musl config for the remarkable itself
-    #[cfg(all(target_arch = "arm", target_env = "musl", target_os = "linux"))]
-    return "/home/root/.local/share/remarkable/xochitl/".into();
+mod disk;
 
-    // else use the sample files for development
-    "./samples/v6/".into()
-}
+/// Time between file re-polls. Files are only read when updated, but batch updated when changed every POLL_DURATION
+const POLL_DURATION: Duration = Duration::from_secs(2);
 
+const PINNED_DIRECTORY: &str = "Favorites";
+const TRASH_DIRECTORY: &str = "Trash";
+
+/// A thread-safe representation of the reMarkable filesystem
 #[derive(Debug, Clone, Default)]
 pub struct Filesystem {
-    path: PathBuf,
+    /// The base path to the document filesystem.
+    /// On the reMarkable device, this is '/home/root/.local/share/remarkable/xochitl/'.
+    base: PathBuf,
+
     elements: DashMap<Uuid, Element>,
 }
 
 impl Filesystem {
-    pub fn from_path(path: impl Into<PathBuf>) -> Self {
+    /// Construct a filesystem from its base path, indexing before returning.
+    pub async fn from_path(path: impl Into<PathBuf>) -> Self {
         let me = Self {
-            path: path.into(),
+            base: path.into(),
             ..Default::default()
         };
 
-        me.reindex();
+        tracing::info!("constructing Filesystem at {:?}", me.base);
+
+        me.index().await;
 
         me
     }
@@ -55,7 +62,7 @@ impl Filesystem {
         }
 
         // if path is trash, return all files in the trash
-        if path == Path::new("Trash") {
+        if path == Path::new(TRASH_DIRECTORY) {
             return self
                 .elements
                 .iter()
@@ -65,7 +72,7 @@ impl Filesystem {
         }
 
         // if path is custom pinned path, return that
-        if path == Path::new("Pinned") {
+        if path == Path::new(PINNED_DIRECTORY) {
             return self
                 .elements
                 .iter()
@@ -130,7 +137,7 @@ impl Filesystem {
                 .is_some_and(|v| self.path_matches(parent, &v)),
 
             // Parent::Trash <=> "/Trash"
-            (Some(t), Parent::Trash) if t == Path::new("/Trash") => true,
+            (Some(t), Parent::Trash) if t == Path::new(TRASH_DIRECTORY) => true,
 
             // Parent::Root <=> "/" (no parent)
             (None, Parent::Root) => true,
@@ -140,32 +147,129 @@ impl Filesystem {
         }
     }
 
-    fn reindex(&self) {
-        tracing::info!("indexing {:?}", self.path);
+    pub async fn index(&self) {
+        tracing::info!("indexing");
 
-        let dir = match self.path.read_dir() {
+        let dir = match self.base.read_dir() {
             Ok(dir) => dir,
             Err(err) => {
-                tracing::error!("failed to read dir {:?}: {}", self.path, err);
+                tracing::error!("failed to read dir {:?}: {}", self.base, err);
                 return;
             }
         };
 
-        let uuids: Vec<Uuid> = dir
-            .filter_map(Result::ok)
-            .filter_map(|s| {
-                Uuid::from_str(&s.path().file_stem().unwrap_or_default().to_string_lossy()).ok()
-            })
-            .dedup()
-            .collect();
-
         self.elements.clear();
 
-        // TODO: parallelize?
-        for uuid in uuids {
-            if let Some(element) = disk::read(&self.path, uuid) {
-                self.elements.insert(uuid, element);
+        stream::iter(dir)
+            // filter by Ok entries' paths
+            .filter_map(|res| async move {
+                match res {
+                    Ok(entry) => Some(entry.path()),
+                    Err(err) => {
+                        tracing::warn!("couldn't read entry: {err}");
+                        None
+                    }
+                }
+            })
+            // only valid .metadata paths
+            .filter_map(|path| async move { disk::Metadata::validate_path(&path) })
+            // read from disk and insert into the elements
+            .for_each_concurrent(None, |uuid| async move {
+                match disk::read(&self.base, &uuid).await {
+                    Ok(element) => {
+                        self.elements.insert(uuid, element);
+                    }
+                    Err(err) => tracing::error!("error reading {uuid} from disk: {err}"),
+                }
+            })
+            .await;
+
+        tracing::debug!("finished indexing");
+    }
+
+    /// Infinitely poll the base directory for changes and update Elements when modified and deleted.
+    pub async fn auto_reindex(&self) {
+        // insert into a set in order to reduce duplicate events (& therefore file reads) within POLL_DURATION
+        let to_update: Arc<DashSet<Uuid>> = Arc::new(DashSet::new());
+        let to_delete: Arc<DashSet<Uuid>> = Arc::new(DashSet::new());
+
+        let watch_update = to_update.clone();
+        let watch_delete = to_delete.clone();
+
+        let watch_handler = move |res: Result<Event, notify::Error>| {
+            let event = match res {
+                Ok(e) => e,
+                Err(err) => {
+                    tracing::warn!("failed to watch file: {err:?}");
+                    return;
+                }
+            };
+
+            // not important for updating
+            if event.kind.is_access() {
+                return;
             }
+
+            // filter changed paths by valid .metadata and .content files then insert them into the queue
+            event
+                .paths
+                .iter()
+                .filter_map(|path| {
+                    disk::Metadata::validate_path(path).or(disk::Content::validate_path(path))
+                })
+                .for_each(|uuid| {
+                    if event.kind.is_remove() {
+                        watch_delete.insert(uuid);
+                    } else {
+                        watch_update.insert(uuid);
+                    }
+                });
+        };
+
+        let mut watcher = match notify::recommended_watcher(watch_handler) {
+            Ok(w) => w,
+            Err(err) => {
+                tracing::error!("error building watcher: {err:?}");
+                return;
+            }
+        };
+
+        // watch our base directory
+        if let Err(err) = watcher.watch(&self.base, RecursiveMode::Recursive) {
+            tracing::error!("error watching root directory: {err}");
+            return;
+        }
+
+        loop {
+            tokio::time::sleep(POLL_DURATION).await;
+
+            // remove all elements who were deleted
+            to_delete.iter().for_each(|uuid| {
+                let uuid = uuid.key();
+
+                tracing::debug!("removing {uuid}");
+                self.elements.remove(uuid);
+            });
+            to_delete.clear();
+
+            // asynchronously update modified elements from disk
+            stream::iter(to_update.iter())
+                .for_each_concurrent(None, |uuid| async move {
+                    let uuid = uuid.key();
+
+                    match disk::read(&self.base, uuid).await {
+                        Ok(element) => {
+                            self.elements.insert(*uuid, element);
+                        }
+                        Err(err) => {
+                            tracing::error!("failed to update {uuid} from disk: {err}");
+                        }
+                    }
+                    tracing::debug!("updated {uuid} from disk");
+                })
+                .await;
+
+            to_update.clear();
         }
     }
 }
@@ -177,22 +281,22 @@ struct Document {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Element {
-    name: String,
+    pub name: String,
     parent: Parent,
     pinned: bool,
-    content: ElementKind,
+    kind: ElementKind,
 }
 
 impl Element {
     pub fn is_doc(&self) -> bool {
-        match self.content {
+        match self.kind {
             ElementKind::Document(_) => true,
             ElementKind::Directory => false,
         }
     }
 
     pub fn is_dir(&self) -> bool {
-        match self.content {
+        match self.kind {
             ElementKind::Document(_) => false,
             ElementKind::Directory => true,
         }
@@ -223,102 +327,4 @@ enum Parent {
     Trash,
     #[serde(untagged)]
     Directory(Uuid),
-}
-
-mod disk {
-    use std::{fs, path::PathBuf};
-
-    use uuid::Uuid;
-
-    use super::{Document, Element, ElementKind, Format, Parent};
-
-    pub fn read(path: &PathBuf, uuid: Uuid) -> Option<Element> {
-        let metadata_path = path.join(format!("{uuid}.metadata"));
-
-        if !metadata_path.exists() {
-            return None;
-        }
-
-        // read metadata
-        let meta: Metadata =
-            match fs::read(metadata_path).map(|b| serde_json::from_slice::<Metadata>(&b)) {
-                Ok(Ok(meta)) => meta,
-                Ok(Err(err)) => {
-                    tracing::error!("failed to parse {uuid}.metadata json: {err}");
-                    return None;
-                }
-                Err(err) => {
-                    tracing::error!("failed to read {uuid}.metadata: {err}");
-                    return None;
-                }
-            };
-
-        match meta.kind {
-            ElementType::Document => {
-                let content_path = path.join(format!("{uuid}.content"));
-
-                if !content_path.exists() {
-                    tracing::error!(
-                        "content file {content_path:?} doesn't exist, skipping document"
-                    );
-                    return None;
-                }
-
-                // read .content file
-                let content: Content =
-                    match fs::read(content_path).map(|b| serde_json::from_slice::<Content>(&b)) {
-                        Ok(Ok(content)) => content,
-                        Ok(Err(err)) => {
-                            tracing::error!("failed to parse {uuid}.content json: {err}");
-                            return None;
-                        }
-                        Err(err) => {
-                            tracing::error!("failed to read {uuid}.content: {err}");
-                            return None;
-                        }
-                    };
-
-                Some(Element {
-                    name: meta.name,
-                    parent: meta.parent,
-                    pinned: meta.pinned,
-                    content: ElementKind::Document(Document {
-                        format: content.format,
-                    }),
-                })
-            }
-            ElementType::Directory => Some(Element {
-                name: meta.name,
-                parent: meta.parent,
-                pinned: meta.pinned,
-                content: ElementKind::Directory,
-            }),
-        }
-    }
-
-    /// Representation of <UUID>.metadata
-    #[derive(serde::Deserialize, Debug)]
-    struct Metadata {
-        #[serde(rename = "type")]
-        kind: ElementType,
-        #[serde(rename = "visibleName")]
-        name: String,
-        parent: Parent,
-        pinned: bool,
-    }
-
-    #[derive(serde::Deserialize, PartialEq, Debug)]
-    enum ElementType {
-        #[serde(rename = "DocumentType")]
-        Document,
-        #[serde(rename = "CollectionType")]
-        Directory,
-    }
-
-    /// Representation of <UUID>.content
-    #[derive(serde::Deserialize, Eq, PartialEq, Debug, Copy, Clone)]
-    struct Content {
-        #[serde(rename = "fileType")]
-        format: Format,
-    }
 }
