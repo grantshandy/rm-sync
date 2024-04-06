@@ -4,15 +4,15 @@ use std::{
     sync::Arc,
 };
 
-use axum::{routing, Router};
+use axum::Router;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 
-use crate::rm::Filesystem;
+use crate::remarkable::Remarkable;
 
 mod dav;
-mod rm;
+mod remarkable;
 mod web;
 
 /// A web interface/webdav proxy for the reMarkable tablet
@@ -39,26 +39,23 @@ async fn main() -> color_eyre::Result<()> {
     let args: Args = argh::from_env();
 
     // parse documents
-    let fs = Arc::new(Filesystem::from_path(&args.documents).await);
+    let fs = Arc::new(Remarkable::from_path(&args.documents).await);
 
     let (a, _) = tokio::join![http_server(&args, fs.clone()), fs.auto_reindex()];
 
     a
 }
 
-async fn http_server(args: &Args, state: Arc<Filesystem>) -> color_eyre::Result<()> {
+async fn http_server(args: &Args, state: Arc<Remarkable>) -> color_eyre::Result<()> {
     let app = Router::new()
-        .route("/", routing::get(web::root))
-        .route("/dav", routing::any(dav::dav))
-        .route("/dav/", routing::any(dav::dav))
-        .route("/dav/*path", routing::any(dav::dav))
-        .fallback(web::fallback)
+        .merge(web::router())
+        .merge(dav::router())
+        .with_state(state)
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
                 .layer(CompressionLayer::new().gzip(true)),
-        )
-        .with_state(state);
+        );
 
     let socket = SocketAddr::new(
         match args.no_broadcast {

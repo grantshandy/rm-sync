@@ -4,30 +4,31 @@ use std::{
     time::Duration,
 };
 
+use color_eyre::eyre;
 use dashmap::{DashMap, DashSet};
 use futures::{stream, StreamExt};
 use notify::{Event, RecursiveMode, Watcher};
 use uuid::Uuid;
 
-mod disk;
+pub mod disk;
 
 /// Time between file re-polls. Files are only read when updated, but batch updated when changed every POLL_DURATION
 const POLL_DURATION: Duration = Duration::from_secs(2);
 
-const PINNED_DIRECTORY: &str = "Favorites";
-const TRASH_DIRECTORY: &str = "Trash";
+pub const PINNED_DIRECTORY: &str = "Favorites";
+pub const TRASH_DIRECTORY: &str = "Trash";
 
 /// A thread-safe representation of the reMarkable filesystem
 #[derive(Debug, Clone, Default)]
-pub struct Filesystem {
+pub struct Remarkable {
     /// The base path to the document filesystem.
     /// On the reMarkable device, this is '/home/root/.local/share/remarkable/xochitl/'.
     base: PathBuf,
 
-    elements: DashMap<Uuid, Element>,
+    elements: DashMap<Uuid, Arc<Element>>,
 }
 
-impl Filesystem {
+impl Remarkable {
     /// Construct a filesystem from its base path, indexing before returning.
     pub async fn from_path(path: impl Into<PathBuf>) -> Self {
         let me = Self {
@@ -42,67 +43,15 @@ impl Filesystem {
         me
     }
 
-    pub fn list(&self, path: impl Into<PathBuf>) -> Vec<Element> {
-        let path = path.into();
-
-        // can't list children of files
-        if path.is_file() {
-            tracing::warn!("list called on a file");
-            return Vec::new();
-        }
-
-        // if path is root, simply return all files pointing to the root
-        if path.parent().is_none() {
-            return self
-                .elements
-                .iter()
-                .filter(|e| e.value().parent == Parent::Root)
-                .map(|v| v.value().clone())
-                .collect();
-        }
-
-        // if path is trash, return all files in the trash
-        if path == Path::new(TRASH_DIRECTORY) {
-            return self
-                .elements
-                .iter()
-                .filter(|e| e.parent == Parent::Trash)
-                .map(|v| v.value().clone())
-                .collect();
-        }
-
-        // if path is custom pinned path, return that
-        if path == Path::new(PINNED_DIRECTORY) {
-            return self
-                .elements
-                .iter()
-                .filter(|e| e.pinned)
-                .map(|e| e.value().clone())
-                .collect();
-        }
-
-        let Some((uuid, _)) = self.uuid_from_path(&path) else {
-            tracing::error!("no uuid found for directory {path:?}");
-            return Vec::new();
-        };
-
-        return self
-            .elements
-            .iter()
-            .filter(|e| e.value().parent == Parent::Directory(uuid))
-            .map(|e| e.value().clone())
-            .collect();
-    }
-
-    fn uuid_from_path(&self, path: &PathBuf) -> Option<(Uuid, Element)> {
-        let mut components = path.components();
+    fn uuid_from_path(&self, path: impl AsRef<Path>) -> Option<(Uuid, Arc<Element>)> {
+        let mut components = path.as_ref().components();
 
         let name = match components.next_back()? {
             Component::Normal(os) => os.to_string_lossy(),
             _ => return None,
         };
 
-        let mut candidates: Vec<(Uuid, Element)> = self
+        let mut candidates: Vec<(Uuid, Arc<Element>)> = self
             .elements
             .iter()
             .filter(|e| e.name == name)
@@ -126,8 +75,8 @@ impl Filesystem {
     }
 
     /// A method for verifying that an element exists at a given path
-    fn path_matches(&self, path: &Path, elem: &Element) -> bool {
-        match (path.parent(), elem.parent) {
+    fn path_matches(&self, path: impl AsRef<Path>, elem: &Element) -> bool {
+        match (path.as_ref().parent(), elem.parent) {
             // elem parent's UUID exists in self.elements & is a directory that ends with the current path, AND is itself valid
             (Some(parent), Parent::Directory(uuid)) => self
                 .elements
@@ -147,6 +96,18 @@ impl Filesystem {
         }
     }
 
+    /// Updates an element in the Filesystem by it's Uuid
+    async fn update_element(&self, uuid: Uuid) -> eyre::Result<()> {
+        match disk::read(&self.base, &uuid).await {
+            Ok(element) => {
+                self.elements.insert(uuid, Arc::new(element));
+                Ok(())
+            }
+            Err(err) => Err(eyre::eyre!("failed to read {uuid} from disk: {err}")),
+        }
+    }
+
+    /// Read the base directory and add all existing elements
     pub async fn index(&self) {
         tracing::info!("indexing");
 
@@ -175,12 +136,9 @@ impl Filesystem {
             .filter_map(|path| async move { disk::Metadata::validate_path(&path) })
             // read from disk and insert into the elements
             .for_each_concurrent(None, |uuid| async move {
-                match disk::read(&self.base, &uuid).await {
-                    Ok(element) => {
-                        self.elements.insert(uuid, element);
-                    }
-                    Err(err) => tracing::error!("error reading {uuid} from disk: {err}"),
-                }
+                if let Err(err) = self.update_element(uuid).await {
+                    tracing::error!("error reindexing: {err}");
+                };
             })
             .await;
 
@@ -257,20 +215,107 @@ impl Filesystem {
                 .for_each_concurrent(None, |uuid| async move {
                     let uuid = uuid.key();
 
-                    match disk::read(&self.base, uuid).await {
-                        Ok(element) => {
-                            self.elements.insert(*uuid, element);
-                        }
-                        Err(err) => {
-                            tracing::error!("failed to update {uuid} from disk: {err}");
-                        }
+                    if let Err(err) = self.update_element(*uuid).await {
+                        tracing::error!("failed to read updated {uuid} from disk: {err}");
+                    } else {
+                        tracing::debug!("updated {uuid} from disk");
                     }
-                    tracing::debug!("updated {uuid} from disk");
                 })
                 .await;
 
             to_update.clear();
         }
+    }
+
+    pub async fn list(&self, path: impl AsRef<Path>) -> Result<Vec<Arc<Element>>, eyre::Error> {
+        // strip prefixed slash for flexibility with Trash and Pinned
+        let path = match path.as_ref().strip_prefix("/") {
+            Ok(stripped) => stripped,
+            Err(_) => path.as_ref(),
+        };
+
+        // can't list children of files
+        if path.is_file() {
+            return Err(eyre::eyre!("list called on a file"));
+        }
+
+        // if path is root, simply return all files pointing to the root
+        if path.parent().is_none() {
+            return Ok(self
+                .elements
+                .iter()
+                .filter(|e| e.value().parent == Parent::Root)
+                .map(|v| v.value().clone())
+                .collect());
+        }
+
+        let Some((uuid, _)) = self.uuid_from_path(&path) else {
+            return Err(eyre::eyre!("no uuid found for directory {path:?}"));
+        };
+
+        let children = self
+            .elements
+            .iter()
+            .filter(|e| e.value().parent == Parent::Directory(uuid))
+            .map(|e| e.value().clone())
+            .collect();
+
+        Ok(children)
+    }
+
+    pub async fn pinned(&self) -> Vec<Arc<Element>> {
+        self.elements
+            .iter()
+            .filter(|e| e.pinned)
+            .map(|e| e.value().clone())
+            .collect()
+    }
+
+    pub async fn trash(&self) -> Vec<Arc<Element>> {
+        self.elements
+            .iter()
+            .filter(|e| e.parent == Parent::Trash)
+            .map(|e| e.value().clone())
+            .collect()
+    }
+
+    pub async fn move_elements(
+        &self,
+        element_path: impl AsRef<Path>,
+        target_path: impl AsRef<Path>,
+    ) -> eyre::Result<()> {
+        let element = element_path
+            .as_ref()
+            .strip_prefix("/")
+            .unwrap_or(element_path.as_ref());
+        let target_path = target_path
+            .as_ref()
+            .strip_prefix("/")
+            .unwrap_or(target_path.as_ref());
+
+        let Some((element_uuid, _)) = self.uuid_from_path(&element) else {
+            return Err(eyre::eyre!("{element:?} not found"));
+        };
+
+        let target_parent = if target_path == Path::new("") {
+            Parent::Root
+        } else {
+            let Some((uuid, _)) = self.uuid_from_path(&target_path) else {
+                return Err(eyre::eyre!("{target_path:?} not found"));
+            };
+
+            Parent::Directory(uuid)
+        };
+
+        if let Err(err) = disk::change_parent(&self.base, &element_uuid, target_parent).await {
+            return Err(eyre::eyre!("failed to delete {element:?}: {err}"));
+        };
+
+        if let Err(err) = self.update_element(element_uuid).await {
+            tracing::error!("failed to update element from disk: {err}");
+        }
+
+        Ok(())
     }
 }
 
@@ -279,26 +324,30 @@ struct Document {
     format: Format,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Element {
-    pub name: String,
+    name: String,
     parent: Parent,
     pinned: bool,
     kind: ElementKind,
 }
 
 impl Element {
-    pub fn is_doc(&self) -> bool {
-        match self.kind {
-            ElementKind::Document(_) => true,
-            ElementKind::Directory => false,
-        }
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn is_dir(&self) -> bool {
         match self.kind {
             ElementKind::Document(_) => false,
             ElementKind::Directory => true,
+        }
+    }
+
+    pub fn is_file(&self) -> bool {
+        match self.kind {
+            ElementKind::Document(_) => true,
+            ElementKind::Directory => false,
         }
     }
 }
@@ -309,7 +358,7 @@ enum ElementKind {
     Directory,
 }
 
-#[derive(serde::Deserialize, Eq, PartialEq, Debug, Copy, Clone)]
+#[derive(serde::Deserialize, serde::Serialize, Eq, PartialEq, Debug, Copy, Clone)]
 enum Format {
     #[serde(rename = "notebook")]
     Notebook,
@@ -319,8 +368,8 @@ enum Format {
     Epub,
 }
 
-#[derive(serde::Deserialize, Eq, PartialEq, Debug, Copy, Clone)]
-enum Parent {
+#[derive(serde::Deserialize, serde::Serialize, Eq, PartialEq, Debug, Copy, Clone)]
+pub enum Parent {
     #[serde(rename = "")]
     Root,
     #[serde(rename = "trash")]

@@ -6,6 +6,7 @@ use std::{
 };
 
 use color_eyre::eyre;
+use serde_json::Value;
 use tokio::fs;
 use uuid::Uuid;
 
@@ -33,7 +34,7 @@ pub async fn read(base: &PathBuf, uuid: &Uuid) -> eyre::Result<Element> {
     })
 }
 
-#[derive(serde::Deserialize, PartialEq, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, PartialEq, Debug)]
 enum ElementType {
     #[serde(rename = "DocumentType")]
     Document,
@@ -42,14 +43,14 @@ enum ElementType {
 }
 
 /// Representation of \<BASE\>/\<UUID\>.metadata
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Debug)]
 pub struct Metadata {
+    parent: Parent,
+    pinned: bool,
     #[serde(rename = "type")]
     kind: ElementType,
     #[serde(rename = "visibleName")]
     name: String,
-    parent: Parent,
-    pinned: bool,
 }
 
 impl Metadata {
@@ -61,9 +62,7 @@ impl Metadata {
             return Err(eyre::eyre!("{path:?} doesn't exist"));
         }
 
-        let content = serde_json::from_slice(&tokio::fs::read(path).await?)?;
-
-        Ok(content)
+        Ok(serde_json::from_slice(&fs::read(path).await?)?)
     }
 
     pub fn validate_path(path: &Path) -> Option<Uuid> {
@@ -78,7 +77,7 @@ impl Metadata {
 }
 
 /// Representation of \<BASE\>/\<UUID\>.content
-#[derive(serde::Deserialize, Eq, PartialEq, Debug, Copy, Clone)]
+#[derive(serde::Deserialize, serde::Serialize, Eq, PartialEq, Debug, Copy, Clone)]
 pub struct Content {
     #[serde(rename = "fileType")]
     format: Format,
@@ -93,9 +92,7 @@ impl Content {
             return Err(eyre::eyre!("{path:?} doesn't exist"));
         }
 
-        let content = serde_json::from_slice(&fs::read(path).await?)?;
-
-        Ok(content)
+        Ok(serde_json::from_slice(&fs::read(path).await?)?)
     }
 
     pub fn validate_path(path: &Path) -> Option<Uuid> {
@@ -115,4 +112,20 @@ impl Into<Document> for Content {
             format: self.format,
         }
     }
+}
+
+pub async fn change_parent(base: impl AsRef<Path>, uuid: &Uuid, parent: Parent) -> eyre::Result<()> {
+    let mut path = base.as_ref().join(uuid.to_string());
+    path.set_extension(METADATA_EXTENSION);
+
+    let mut disk_value: Value = serde_json::from_slice(&fs::read(&path).await?)?;
+
+    let parent = serde_json::to_value(parent)?;
+    if let Some(disk_parent) = disk_value.get_mut("parent") {
+        *disk_parent = parent;
+    }
+
+    fs::write(path, serde_json::to_string_pretty(&disk_value)?).await?;
+
+    Ok(())
 }

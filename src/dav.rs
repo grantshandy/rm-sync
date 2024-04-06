@@ -4,19 +4,27 @@
 
 use std::{path, sync::Arc};
 
-use crate::rm::Filesystem;
+use crate::remarkable::Remarkable;
 use axum::{
     extract::{self, Request, State},
     http::{Method, StatusCode},
     response::{IntoResponse, Response},
+    routing, Router,
 };
 use headers_core::HeaderValue;
 use webdav::methods::{COPY, LOCK, MKCOL, MOVE, PROPFIND, PROPPATCH, UNLOCK};
 
-pub async fn dav(
+pub fn router() -> Router<Arc<Remarkable>> {
+    Router::new()
+        .route("/dav", routing::any(handler))
+        .route("/dav/", routing::any(handler))
+        .route("/dav/*path", routing::any(handler))
+}
+
+pub async fn handler(
     method: Method,
     path: Option<extract::Path<path::PathBuf>>,
-    State(fs): State<Arc<Filesystem>>,
+    State(fs): State<Arc<Remarkable>>,
     req: Request,
 ) -> Response {
     let path = match path {
@@ -45,46 +53,46 @@ pub async fn dav(
     resp
 }
 
-async fn dav_get(req: Request, path: path::PathBuf, fs: Arc<Filesystem>) -> Response {
-    format!("{:#?}", fs.list(path)).into_response()
+async fn dav_get(req: Request, path: path::PathBuf, fs: Arc<Remarkable>) -> Response {
+    format!("{:#?}", fs.list(path).await).into_response()
 }
 
-async fn dav_put(req: Request, path: path::PathBuf, fs: Arc<Filesystem>) -> Response {
+async fn dav_put(req: Request, path: path::PathBuf, fs: Arc<Remarkable>) -> Response {
     ().into_response()
 }
 
-async fn dav_delete(req: Request, path: path::PathBuf, fs: Arc<Filesystem>) -> Response {
+async fn dav_delete(req: Request, path: path::PathBuf, fs: Arc<Remarkable>) -> Response {
     ().into_response()
 }
 
-async fn dav_options(req: Request, path: path::PathBuf, fs: Arc<Filesystem>) -> Response {
+async fn dav_options(req: Request, path: path::PathBuf, fs: Arc<Remarkable>) -> Response {
     ().into_response()
 }
 
-async fn dav_proppatch(req: Request, path: path::PathBuf, fs: Arc<Filesystem>) -> Response {
+async fn dav_proppatch(req: Request, path: path::PathBuf, fs: Arc<Remarkable>) -> Response {
     ().into_response()
 }
 
-async fn dav_propfind(req: Request, path: path::PathBuf, fs: Arc<Filesystem>) -> Response {
+async fn dav_propfind(req: Request, path: path::PathBuf, fs: Arc<Remarkable>) -> Response {
     ().into_response()
 }
 
-async fn dav_lock(req: Request, path: path::PathBuf, fs: Arc<Filesystem>) -> Response {
+async fn dav_lock(req: Request, path: path::PathBuf, fs: Arc<Remarkable>) -> Response {
     StatusCode::BAD_REQUEST.into_response()
 }
 
-async fn dav_unlock(req: Request, path: path::PathBuf, fs: Arc<Filesystem>) -> Response {
+async fn dav_unlock(req: Request, path: path::PathBuf, fs: Arc<Remarkable>) -> Response {
     StatusCode::BAD_REQUEST.into_response()
 }
 
-async fn dav_mkcol(req: Request, path: path::PathBuf, fs: Arc<Filesystem>) -> Response {
+async fn dav_mkcol(req: Request, path: path::PathBuf, fs: Arc<Remarkable>) -> Response {
     ().into_response()
 }
 
-async fn dav_move(req: Request, path: path::PathBuf, fs: Arc<Filesystem>) -> Response {
+async fn dav_move(req: Request, path: path::PathBuf, fs: Arc<Remarkable>) -> Response {
     ().into_response()
 }
 
-async fn dav_copy(req: Request, path: path::PathBuf, fs: Arc<Filesystem>) -> Response {
+async fn dav_copy(req: Request, path: path::PathBuf, fs: Arc<Remarkable>) -> Response {
     ().into_response()
 }

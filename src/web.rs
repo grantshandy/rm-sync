@@ -1,47 +1,57 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, str::FromStr, sync::Arc};
 
-use axum::extract::{Query, State};
+use axum::{
+    extract::{Query, State},
+    response::{IntoResponse, Response},
+    routing, Router,
+};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
-use crate::rm::Filesystem;
+use crate::remarkable::Remarkable;
 
-#[derive(serde::Deserialize)]
-pub struct PageQuery {
-    dir: Option<PathBuf>,
+pub fn router() -> Router<Arc<Remarkable>> {
+    Router::new()
+        .route("/", routing::get(root))
+        .route("/explorer", routing::get(explorer))
+        .fallback(routing::get(fallback))
 }
 
-pub async fn root(Query(query): Query<PageQuery>, State(fs): State<Arc<Filesystem>>) -> Markup {
-    let query_dir = query.dir.unwrap_or_default();
-    let elems = fs.list(&query_dir);
-
+async fn root(state: State<Arc<Remarkable>>) -> Response {
     page(
         "rm-cloudsync",
         html! {
             h1 { "rm-cloudsync" }
-            h3 { "Directories" }
-            ul {
-                @if let Some(parent) = query_dir.parent() {
-                    li {
-                        a href=(format!("/?dir={}", parent.to_string_lossy())) { "↰ Back" }
-                    }
-                }
-                @for dir in elems.iter().filter(|e| e.is_dir()) {
-                    li {
-                        a href=(format!("/?dir={}/{}", query_dir.to_string_lossy(), dir.name)) { (dir.name) }
-                    }
-                }
-            }
-            h3 { "Documents" }
-            ul {
-                @for doc in elems.iter().filter(|e| e.is_doc()) {
-                    li { (doc.name) }
-                }
-            }
+            (explorer(Query(ExplorerQuery { path: PathBuf::from_str("/Trash").unwrap() }), state).await)
         },
-    )
+    ).into_response()
 }
 
-pub async fn fallback() -> Markup {
+#[derive(serde::Deserialize, Default)]
+struct ExplorerQuery {
+    path: PathBuf,
+}
+
+async fn explorer(Query(query): Query<ExplorerQuery>, State(fs): State<Arc<Remarkable>>) -> Markup {
+    // let elems = match fs.list(&query.path).await {
+    //     Ok(elems) => elems,
+    //     Err(err) => {
+    //         return html! {
+    //             "Error: " (format!("{err:#?}"))
+    //         };
+    //     }
+    // };
+
+    let elems = fs.pinned().await;
+
+    html! {
+        #explorer {
+            p { "path: " (format!("{:?}", query.path)) }
+            (format!("{elems:?}"))
+        }
+    }
+}
+
+async fn fallback() -> Markup {
     page(
         "Page not Found",
         html! {
@@ -58,7 +68,7 @@ fn page(title: impl AsRef<str>, body: Markup) -> Markup {
             head {
                 meta charset="UTF-8";
                 meta name="viewport" content="width=device-width, initial-scale=1.0";
-                // script { (PreEscaped(include_str!(env!("HTMX")))) }
+                script { (PreEscaped(include_str!(env!("HTMX")))) }
                 title { (title.as_ref()) }
             }
             body { (body) }
