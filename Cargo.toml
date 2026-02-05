@@ -20,7 +20,7 @@ axum = { version = "0.7.5", features = ["macros"] }
 webdav = { version = "0.1.0", package = "webdav-meta" }
 maud = { version = "0.26.0", features = ["axum"] }
 
-time = "0.3.34"
+time = "0.3.47"
 pnet = { version = "0.34.0", default-features = false, features = ["std"] }
 notify = { version = "6.1.1", default-features = false, features = ["macos_kqueue"] }
 
